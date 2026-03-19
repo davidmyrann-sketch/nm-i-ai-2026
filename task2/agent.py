@@ -4,16 +4,26 @@ NM i AI 2026 — Tripletex AI Accounting Agent
 Flask endpoint: POST /solve
 Set ANTHROPIC_KEY environment variable before running.
 """
-import os, json, base64, requests
-from collections import deque
+import os, json, base64, requests, time
 from flask import Flask, request, jsonify
 from anthropic import Anthropic
 
 app = Flask(__name__)
 client = Anthropic(api_key=os.environ.get("ANTHROPIC_KEY", ""))
 
-# In-memory log of last 3 executions
-EXEC_LOGS = deque(maxlen=3)
+LOG_FILE = "/tmp/agent_logs.json"
+
+def save_log(entry):
+    try:
+        try:
+            logs = json.load(open(LOG_FILE))
+        except:
+            logs = []
+        logs.append(entry)
+        logs = logs[-5:]  # keep last 5
+        json.dump(logs, open(LOG_FILE, "w"), ensure_ascii=False)
+    except Exception as e:
+        print(f"[log] save failed: {e}")
 
 SYSTEM_PROMPT = """You are an expert Tripletex accounting agent. You receive a task in any language (Norwegian, English, Spanish, Portuguese, Nynorsk, German, French) and must complete it using the Tripletex v2 REST API.
 
@@ -157,8 +167,8 @@ def call_api(method, base_url, session_token, path, body=None):
 
 
 def run_agent(prompt, files, base_url, session_token):
-    exec_log = {"prompt": prompt[:300], "base_url": base_url, "calls": [], "iterations": 0}
-    EXEC_LOGS.append(exec_log)
+    exec_log = {"ts": time.strftime("%H:%M:%S"), "prompt": prompt[:300], "base_url": base_url, "calls": [], "iterations": 0}
+    save_log(exec_log)
     content = [{"type": "text", "text": f"TASK: {prompt}"}]
     for f in files:
         if f.get("mime_type", "").startswith("image/"):
@@ -227,10 +237,12 @@ def run_agent(prompt, files, base_url, session_token):
 
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(res, ensure_ascii=False)[:3000]})
 
+        save_log(exec_log)
         if done:
             break
         messages.append({"role": "user", "content": tool_results})
 
+    save_log(exec_log)
     return {"status": "completed"}
 
 
@@ -257,7 +269,10 @@ def solve():
 
 @app.route("/logs", methods=["GET"])
 def logs():
-    return jsonify(list(EXEC_LOGS))
+    try:
+        return jsonify(json.load(open(LOG_FILE)))
+    except:
+        return jsonify([])
 
 
 @app.route("/health", methods=["GET"])
