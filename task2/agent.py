@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify
 from anthropic import Anthropic
 
 app = Flask(__name__)
-client = Anthropic(api_key=os.environ["ANTHROPIC_KEY"])
+client = Anthropic(api_key=os.environ.get("ANTHROPIC_KEY", ""))
 
 SYSTEM_PROMPT = """You are an expert Tripletex accounting agent. You receive a task in any language (Norwegian, English, Spanish, Portuguese, Nynorsk, German, French) and must complete it using the Tripletex v2 REST API.
 
