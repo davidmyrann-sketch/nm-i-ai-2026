@@ -189,17 +189,27 @@ def run_agent(prompt, files, base_url, session_token):
 def solve():
     data = request.json or {}
     creds = data.get("tripletex_credentials", {})
-    print(f"[solve] {data.get('prompt','')[:100]}")
+    base_url = creds.get("base_url", "")
+    session_token = creds.get("session_token", "")
+    prompt = data.get("prompt", "")
+    print(f"[solve] prompt: {prompt[:150]}")
+    print(f"[solve] base_url: {base_url}")
+    print(f"[solve] token present: {bool(session_token)}")
+    print(f"[solve] ANTHROPIC_KEY set: {bool(os.environ.get('ANTHROPIC_KEY'))}")
     try:
-        return jsonify(run_agent(data.get("prompt",""), data.get("files",[]), creds.get("base_url",""), creds.get("session_token","")))
+        result = run_agent(prompt, data.get("files", []), base_url, session_token)
+        print(f"[solve] done: {result}")
+        return jsonify(result)
     except Exception as e:
-        print(f"[error] {e}")
+        import traceback
+        print(f"[error] {traceback.format_exc()}")
         return jsonify({"status": "completed"})
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True})
+    key_ok = bool(os.environ.get("ANTHROPIC_KEY"))
+    return jsonify({"ok": True, "anthropic_key_set": key_ok})
 
 
 if __name__ == "__main__":
