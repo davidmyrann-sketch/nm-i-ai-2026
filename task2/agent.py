@@ -16,12 +16,16 @@ SYSTEM_PROMPT = """You are an expert Tripletex accounting agent. You receive a t
 IMPORTANT RULES:
 - Always use the provided base_url and session_token — never hardcode URLs
 - Authenticate with Basic Auth: username="0", password=session_token
-- Use the tools to make API calls. Think step by step before acting.
+- You MUST use tools for every action — never respond with just text
+- Think step by step, make the required API calls, then call finish_task when ALL steps are done
 - List resources first if you need to find IDs
-- Return only after ALL steps of the task are completed
+- If an API call fails with an error, analyze the error and try again with corrected parameters
+- If you get a 401/403, the auth is invalid — try the same call once more then move on
+- If you get a 404, the resource path may be wrong — try variations
+- If you get a 400, check the required fields and try again with corrected body
 
 COMMON PATTERNS:
-- Create employee: POST /employee {firstName, lastName, email, roleAsAccountant/roleAsAdministrator}
+- Create employee: POST /employee {firstName, lastName, email, roleAsAccountant:true}
 - Create customer: POST /customer {name, email, isCustomer:true}
 - Create supplier: POST /customer {name, isSupplier:true}
 - Create product: POST /product {name, number, costExcludingVatCurrency}
@@ -42,7 +46,13 @@ RESPONSE FORMAT:
 - Use ?fields=* for all fields
 - Dates: YYYY-MM-DD
 
-When ALL steps are complete, call finish_task."""
+TROUBLESHOOTING:
+- If POST /employee returns 400: try adding roleAsAccountant:true to the body
+- If POST /customer returns 400: ensure isCustomer:true or isSupplier:true is set
+- If POST /order returns 400: orderLines must be a non-empty array with product.id, count, and unitPriceExcludingVat
+- If PUT /:pay returns 400: check paymentTypeId is valid via GET /invoice/paymentType first
+
+When ALL steps of the task are complete, call finish_task with a summary."""
 
 TOOLS = [
     {
@@ -70,12 +80,12 @@ TOOLS = [
     },
     {
         "name": "api_put",
-        "description": "PUT request to update a resource or trigger an action (e.g. /invoice/123/:pay)",
+        "description": "PUT request to update a resource or trigger an action (e.g. /invoice/123/:pay?paymentDate=2025-01-01&paymentTypeId=1&amount=100)",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string"},
-                "body": {"type": "object", "description": "JSON body — can be empty {} for action endpoints"}
+                "body": {"type": "object", "description": "JSON body — use {} for action endpoints with query params"}
             },
             "required": ["path", "body"]
         }
@@ -93,7 +103,7 @@ TOOLS = [
     },
     {
         "name": "finish_task",
-        "description": "Call when ALL task steps are completed",
+        "description": "Call ONLY when ALL task steps are fully completed",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -110,6 +120,7 @@ def call_api(method, base_url, session_token, path, body=None):
     url  = base + (path if path.startswith("/") else "/" + path)
     auth = ("0", session_token)
     hdrs = {"Content-Type": "application/json", "Accept": "application/json"}
+    print(f"[api] {method} {url}")
     try:
         if method == "GET":
             r = requests.get(url, auth=auth, headers=hdrs, timeout=30)
@@ -119,6 +130,7 @@ def call_api(method, base_url, session_token, path, body=None):
             r = requests.put(url, auth=auth, headers=hdrs, json=body or {}, timeout=30)
         elif method == "DELETE":
             r = requests.delete(url, auth=auth, headers=hdrs, timeout=30)
+        print(f"[api] status={r.status_code}")
         if r.status_code == 204:
             return {"status": "deleted"}
         try:
@@ -143,18 +155,17 @@ def run_agent(prompt, files, base_url, session_token):
 
     messages = [{"role": "user", "content": content}]
 
-    for _ in range(25):
+    for iteration in range(30):
         response = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=4096,
+            max_tokens=8096,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
+            tool_choice={"type": "any"},  # Force Claude to always use a tool
             messages=messages
         )
+        print(f"[agent] iter={iteration} stop_reason={response.stop_reason}")
         messages.append({"role": "assistant", "content": response.content})
-
-        if response.stop_reason in ("end_turn", None) or response.stop_reason != "tool_use":
-            break
 
         tool_results = []
         done = False
@@ -162,9 +173,11 @@ def run_agent(prompt, files, base_url, session_token):
             if block.type != "tool_use":
                 continue
             inp = block.input
+            print(f"[agent] tool={block.name} inp={json.dumps(inp)[:200]}")
             if block.name == "finish_task":
                 done = True
                 res = {"done": True, "summary": inp.get("summary", "")}
+                print(f"[agent] FINISHED: {inp.get('summary', '')[:200]}")
             elif block.name == "api_get":
                 res = call_api("GET", base_url, session_token, inp["path"])
             elif block.name == "api_post":
