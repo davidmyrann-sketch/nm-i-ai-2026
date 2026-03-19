@@ -174,13 +174,19 @@ def run_agent(prompt, files, base_url, session_token):
 
     for iteration in range(30):
         exec_log["iterations"] = iteration + 1
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=8096,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages
-        )
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=8096,
+                system=SYSTEM_PROMPT,
+                tools=TOOLS,
+                messages=messages
+            )
+        except Exception as api_err:
+            err_msg = str(api_err)
+            print(f"[agent] Claude API error iter={iteration}: {err_msg}")
+            exec_log["calls"].append({"tool": "ERROR", "error": err_msg[:300]})
+            break
         print(f"[agent] iter={iteration} stop_reason={response.stop_reason}")
         messages.append({"role": "assistant", "content": response.content})
 
