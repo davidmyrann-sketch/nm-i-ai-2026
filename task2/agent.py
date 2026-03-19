@@ -5,11 +5,15 @@ Flask endpoint: POST /solve
 Set ANTHROPIC_KEY environment variable before running.
 """
 import os, json, base64, requests
+from collections import deque
 from flask import Flask, request, jsonify
 from anthropic import Anthropic
 
 app = Flask(__name__)
 client = Anthropic(api_key=os.environ.get("ANTHROPIC_KEY", ""))
+
+# In-memory log of last 3 executions
+EXEC_LOGS = deque(maxlen=3)
 
 SYSTEM_PROMPT = """You are an expert Tripletex accounting agent. You receive a task in any language (Norwegian, English, Spanish, Portuguese, Nynorsk, German, French) and must complete it using the Tripletex v2 REST API.
 
@@ -142,6 +146,8 @@ def call_api(method, base_url, session_token, path, body=None):
 
 
 def run_agent(prompt, files, base_url, session_token):
+    exec_log = {"prompt": prompt[:300], "base_url": base_url, "calls": [], "iterations": 0}
+    EXEC_LOGS.append(exec_log)
     content = [{"type": "text", "text": f"TASK: {prompt}"}]
     for f in files:
         if f.get("mime_type", "").startswith("image/"):
@@ -156,12 +162,13 @@ def run_agent(prompt, files, base_url, session_token):
     messages = [{"role": "user", "content": content}]
 
     for iteration in range(30):
+        exec_log["iterations"] = iteration + 1
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=8096,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
-            tool_choice={"type": "any"},  # Force Claude to always use a tool
+            tool_choice={"type": "any"},
             messages=messages
         )
         print(f"[agent] iter={iteration} stop_reason={response.stop_reason}")
@@ -177,15 +184,20 @@ def run_agent(prompt, files, base_url, session_token):
             if block.name == "finish_task":
                 done = True
                 res = {"done": True, "summary": inp.get("summary", "")}
+                exec_log["calls"].append({"tool": "finish_task", "summary": inp.get("summary", "")[:200]})
                 print(f"[agent] FINISHED: {inp.get('summary', '')[:200]}")
             elif block.name == "api_get":
                 res = call_api("GET", base_url, session_token, inp["path"])
+                exec_log["calls"].append({"tool": "GET", "path": inp["path"], "status": res.get("status", str(res)[:100])})
             elif block.name == "api_post":
                 res = call_api("POST", base_url, session_token, inp["path"], inp.get("body", {}))
+                exec_log["calls"].append({"tool": "POST", "path": inp["path"], "body_keys": list(inp.get("body", {}).keys()), "result": str(res)[:200]})
             elif block.name == "api_put":
                 res = call_api("PUT", base_url, session_token, inp["path"], inp.get("body", {}))
+                exec_log["calls"].append({"tool": "PUT", "path": inp["path"], "result": str(res)[:200]})
             elif block.name == "api_delete":
                 res = call_api("DELETE", base_url, session_token, inp["path"])
+                exec_log["calls"].append({"tool": "DELETE", "path": inp["path"], "result": str(res)[:200]})
             else:
                 res = {"error": "unknown tool"}
 
@@ -217,6 +229,11 @@ def solve():
         import traceback
         print(f"[error] {traceback.format_exc()}")
         return jsonify({"status": "completed"})
+
+
+@app.route("/logs", methods=["GET"])
+def logs():
+    return jsonify(list(EXEC_LOGS))
 
 
 @app.route("/health", methods=["GET"])
