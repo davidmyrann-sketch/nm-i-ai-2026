@@ -179,11 +179,18 @@ def run_agent(prompt, files, base_url, session_token):
             max_tokens=8096,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
-            tool_choice={"type": "any"},
             messages=messages
         )
         print(f"[agent] iter={iteration} stop_reason={response.stop_reason}")
         messages.append({"role": "assistant", "content": response.content})
+
+        # If Claude responded with text only (no tools), push it to use tools
+        if response.stop_reason == "end_turn":
+            has_tool = any(b.type == "tool_use" for b in response.content)
+            if not has_tool:
+                print(f"[agent] end_turn with no tools — nudging Claude")
+                messages.append({"role": "user", "content": "You must use a tool now. Make the first API call required to complete the task."})
+                continue
 
         tool_results = []
         done = False

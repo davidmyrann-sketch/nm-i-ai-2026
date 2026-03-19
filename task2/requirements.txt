@@ -1,5 +1,5 @@
 flask
 flask-cors
-anthropic
+anthropic>=0.40.0
 requests
 gunicorn
