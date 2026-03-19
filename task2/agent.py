@@ -184,18 +184,25 @@ def run_agent(prompt, files, base_url, session_token):
 
     for iteration in range(30):
         exec_log["iterations"] = iteration + 1
-        try:
-            response = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=8096,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=messages
-            )
-        except Exception as api_err:
-            err_msg = str(api_err)
-            print(f"[agent] Claude API error iter={iteration}: {err_msg}")
-            exec_log["calls"].append({"tool": "ERROR", "error": err_msg[:300]})
+        response = None
+        for attempt in range(4):
+            try:
+                response = client.messages.create(
+                    model="claude-sonnet-4-6",
+                    max_tokens=8096,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOLS,
+                    messages=messages
+                )
+                break
+            except Exception as api_err:
+                err_msg = str(api_err)
+                print(f"[agent] Claude API error iter={iteration} attempt={attempt}: {err_msg}")
+                exec_log["calls"].append({"tool": "ERROR", "error": err_msg[:300]})
+                save_log(exec_log)
+                if attempt < 3:
+                    time.sleep(3 * (attempt + 1))
+        if response is None:
             break
         print(f"[agent] iter={iteration} stop_reason={response.stop_reason}")
         messages.append({"role": "assistant", "content": response.content})
@@ -278,7 +285,20 @@ def logs():
 @app.route("/health", methods=["GET"])
 def health():
     key_ok = bool(os.environ.get("ANTHROPIC_KEY"))
-    return jsonify({"ok": True, "anthropic_key_set": key_ok})
+    # Test Anthropic connectivity
+    try:
+        test_client = Anthropic(api_key=os.environ.get("ANTHROPIC_KEY", ""))
+        r = test_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "hi"}]
+        )
+        claude_ok = True
+        claude_err = None
+    except Exception as e:
+        claude_ok = False
+        claude_err = str(e)[:200]
+    return jsonify({"ok": True, "anthropic_key_set": key_ok, "claude_reachable": claude_ok, "claude_error": claude_err})
 
 
 if __name__ == "__main__":
